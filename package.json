@@ -1,0 +1,19 @@
+{
+  "name": "serial-db",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@serialport/bindings-cpp": "^13.0.1",
+    "@serialport/stream": "^13.0.0",
+    "serialport": "^13.0.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
+  }
+}
