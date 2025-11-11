@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitor de Leituras</title>
+    <!-- Carrega o Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Estilo para a barra de rolagem no Firefox */
+        .scrollbar-thin {
+            scrollbar-width: thin;
+            scrollbar-color: #4b5563 #1f2937; /* thumb-color track-color */
+        }
+        /* Estilo para a barra de rolagem no WebKit (Chrome, Safari, Edge) */
+        .scrollbar-webkit::-webkit-scrollbar {
+            width: 8px;
+        }
+        .scrollbar-webkit::-webkit-scrollbar-track {
+            background: #1f2937;
+            border-radius: 10px;
+        }
+        .scrollbar-webkit::-webkit-scrollbar-thumb {
+            background-color: #4b5563;
+            border-radius: 10px;
+            border: 2px solid #1f2937;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200 font-sans">
+
+    <div class="flex flex-col h-screen max-w-4xl mx-auto p-4">
+        <!-- Cabeçalho -->
+        <header class="border-b border-gray-700 pb-2 mb-4">
+            <h1 class="text-2xl font-bold text-center text-blue-400">
+                Sala de Leituras (Chat)
+            </h1>
+            <p class="text-center text-sm text-gray-500">
+                Exibindo leituras da tabela `leituras_brutas` em tempo real.
+            </p>
+        </header>
+
+        <!-- Área de Mensagens -->
+        <main id="messages-container" 
+              class="flex-1 bg-gray-800 rounded-lg p-4 space-y-3 overflow-y-auto scrollbar-thin scrollbar-webkit">
+            
+            <!-- Mensagens serão injetadas aqui pelo JavaScript -->
+            <div id="loading" class="text-center text-gray-500">
+                Carregando mensagens...
+            </div>
+            
+        </main>
+
+        <!-- Rodapé/Status -->
+        <footer class="mt-4 text-center">
+            <p id="status-text" class="text-sm text-green-500">Buscando novas mensagens...</p>
+        </footer>
+    </div>
+
+    <script>
+        const messagesContainer = document.getElementById('messages-container');
+        const loadingEl = document.getElementById('loading');
+        const statusTextEl = document.getElementById('status-text');
+
+        // Paleta de cores para os identificadores
+        const ID_COLORS = [
+            'bg-blue-600', 'bg-green-600', 'bg-purple-600', 'bg-red-600',
+            'bg-yellow-600', 'bg-indigo-600', 'bg-pink-600', 'bg-teal-600'
+        ];
+
+        // Mapeia IDs para cores
+        const idColorMap = new Map();
+        let colorIndex = 0;
+
+        /**
+         * Retorna uma cor consistente para um dado ID.
+         * @param {string} id - O identificador (ex: "01", "02").
+         * @returns {string} - Uma classe de cor do Tailwind.
+         */
+        function getIdColor(id) {
+            if (!idColorMap.has(id)) {
+                idColorMap.set(id, ID_COLORS[colorIndex % ID_COLORS.length]);
+                colorIndex++;
+            }
+            return idColorMap.get(id);
+        }
+
+        /**
+         * Formata o timestamp do banco de dados para um formato legível.
+         * @param {string} isoTimestamp - O timestamp no formato ISO (TIMESTAMPTZ).
+         * @returns {string} - Data e hora formatadas (ex: 11/11/2025 14:30:05).
+         */
+        function formatTimestamp(isoTimestamp) {
+            try {
+                return new Date(isoTimestamp).toLocaleString('pt-BR');
+            } catch (e) {
+                console.error("Erro ao formatar timestamp:", isoTimestamp, e);
+                return "data inválida";
+            }
+        }
+
+        /**
+         * Renderiza as mensagens na tela.
+         * @param {Array} messages - Um array de objetos de mensagem.
+         */
+        function renderMessages(messages) {
+            if (loadingEl) {
+                loadingEl.remove();
+            }
+            
+            // Limpa o container
+            messagesContainer.innerHTML = ''; 
+
+            if (messages.length === 0) {
+                 messagesContainer.innerHTML = '<div class="text-center text-gray-500">Nenhuma mensagem encontrada.</div>';
+                 return;
+            }
+
+            // Adiciona cada mensagem
+            messages.forEach(msg => {
+                const color = getIdColor(msg.identificador);
+
+                const messageEl = document.createElement('div');
+                messageEl.className = 'flex flex-col';
+                
+                // Alinha as mensagens. Vamos alinhar todas à esquerda para simplicidade.
+                // Você pode adicionar lógica para alinhar "próprias" vs "outras" se quiser.
+                messageEl.classList.add('items-start'); 
+
+                messageEl.innerHTML = `
+                    <div class="max-w-xs lg:max-w-md p-3 rounded-lg shadow ${color}">
+                        <!-- Cabeçalho da Mensagem (ID e Timestamp) -->
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="font-bold text-sm">ID: ${msg.identificador}</span>
+                            <span class="text-xs text-gray-200 opacity-80 ml-4">${formatTimestamp(msg.timestamp)}</span>
+                        </div>
+                        <!-- Conteúdo da Mensagem -->
+                        <p class="text-base">${msg.mensagem_processada}</p>
+                    </div>
+                `;
+                
+                messagesContainer.appendChild(messageEl);
+            });
+
+            // Rola para a mensagem mais recente (a última no container)
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        /**
+         * Busca as mensagens da API.
+         */
+        async function fetchMessages() {
+            try {
+                const response = await fetch('/api/messages');
+                if (!response.ok) {
+                    throw new Error(`Erro HTTP: ${response.status}`);
+                }
+                const messages = await response.json();
+                renderMessages(messages);
+                statusTextEl.textContent = 'Mensagens atualizadas.';
+                statusTextEl.className = 'text-sm text-green-500';
+            } catch (error) {
+                console.error('Falha ao buscar mensagens:', error);
+                statusTextEl.textContent = 'Erro ao conectar com o servidor.';
+                statusTextEl.className = 'text-sm text-red-500';
+            }
+        }
+
+        // --- Inicialização ---
+
+        // Busca as mensagens a cada 3 segundos
+        setInterval(fetchMessages, 3000);
+        
+        // Carga inicial
+        fetchMessages();
+
+    </script>
+</body>
+</html>
