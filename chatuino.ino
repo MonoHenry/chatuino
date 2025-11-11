@@ -1,229 +1,140 @@
-#include <SPI.h>
-#include "printf.h"
-#include "RF24.h"
+// index_postgres.js - Script Node.js para leitura Serial e PostgreSQL
 
-#define CE_PIN 7
-#define CSN_PIN 8
+const { SerialPort } = require('serialport');
+const { ReadlineParser } = require('@serialport/parser-readline'); 
+const { Client } = require('pg'); 
+require('dotenv').config(); 
 
-// TYPES
-#define DATA 0
-#define ACK 1
-#define RTS 2
-#define CTS 3
+// ----------------------------------------------------
+// Configurações - AJUSTE AQUI
+const PORT_NAME = "/dev/ttyUSB0";    
+const BAUD_RATE = 115200;            
 
-#define MAX_SIZE 32
+// 💡 NOVO: Expressão Regular para validar e extrair o formato "XX: <mensagem>"
+// ^(\d{2}):\s*(.*)$
+// Grupo 1: (\d{2}) -> Captura o ID de dois dígitos (00-99)
+// Grupo 2: (.*) -> Captura o restante da mensagem
+// ----------------------------------------------------
 
-#define TIMEOUT 500  //millis
-RF24 radio(CE_PIN, CSN_PIN);
+// Variáveis globais para a conexão
+let client;
 
-uint64_t address[2] = { 0x4040404040LL, 0x3030303030LL };
-uint8_t origem = 47;
-uint8_t destino = 26;
-uint8_t servidor;
-uint8_t payload[MAX_SIZE];
-uint8_t buffer[MAX_SIZE];
+// --- FUNÇÕES DE BANCO DE DADOS ---
 
-
-void setup() {
-  // put your setup code here, to run once:
-  Serial.begin(115200);
-  while (!Serial) {
-    // some boards need to wait to ensure access to serial over USB
-  }
-
-  // initialize the transceiver on the SPI bus
-  if (!radio.begin()) {
-    Serial.println(F("radio hardware is not responding!!"));
-    while (1) {}  // hold in infinite loop
-  }
-
-  radio.setPALevel(RF24_PA_MAX);  // RF24_PA_MAX is default.
-  radio.setChannel(121);
-  radio.setPayloadSize(sizeof(payload));  // float datatype occupies 4 bytes
-  radio.setAutoAck(false);
-  radio.setCRCLength(RF24_CRC_DISABLED);
-  radio.setDataRate(RF24_250KBPS);
-
-  radio.openWritingPipe(address[0]);     // always uses pipe 0
-  radio.openReadingPipe(1, address[1]);  // using pipe 1
-
-  //For debugging info
-  printf_begin();  // needed only once for printing details
-  //radio.printDetails();       // (smaller) function that prints raw register values
-  radio.printPrettyDetails();  // (larger) function that prints human readable data
-}
-
-void printPacote(byte* pac, int tamanho) {
-  Serial.print(F("Rcvd "));
-  Serial.print(tamanho);  // print the size of the payload
-  Serial.print(F(" O: "));
-  Serial.print(pac[0]);  // print the payload's value
-  Serial.print(F(" D: "));
-  Serial.print(pac[1]);  // print the payload's value
-  Serial.print(F(" C: "));
-  Serial.print(pac[2]);  // print the payload's value
-  Serial.print(F(" i: "));
-  Serial.print(pac[3]);  // print the payload's value
-  Serial.print(F(" : "));
-  for (int i = 4; i < tamanho; i++) {
-    Serial.print(pac[i]);
-  }
-  Serial.println();  // print the payload's value
-}
-
-uint8_t checksum_f(uint8_t* mensagem, int size) {
-  uint16_t sum = 0;
-  for (int i = 0; i < size; i++)
-    sum += mensagem[i];
-
-  return (uint8_t)(sum & 0xFF);
-}
-
-void envia(int destino, int tipo, uint8_t* mensagem, uint8_t size) {
-  radio.flush_tx();
-
-  payload[0] = origem;
-  payload[1] = destino;
-  payload[2] = tipo;
-  payload[3] = size + 1;
-
-  for (int i = 0; i < size - 4; i++) {
-    payload[i + 4] = mensagem[i];
-  }
-
-  uint8_t checksum = checksum_f(payload, size);
-  payload[size] = checksum;
-
-  unsigned long inicio = millis();
-  while (millis() - inicio < TIMEOUT) {
-    radio.startListening();
-    delayMicroseconds(130);
-    if (!radio.testCarrier()) {
-      radio.stopListening();
-      radio.write(&payload[0], size + 1);
-      // for(int i = 0; i < size + 1; i++)
-      //   Serial.print(payload[i]);
-      // Serial.println("");
-      return;
-    } else {
-      Serial.println("Meio Ocupado");
-      delayMicroseconds(270);
-    }
-    radio.flush_tx();
-  }
-  Serial.println("TimeOut!");
-}
-
-int envia_pacote(int destino, byte* mensagem, uint8_t size) {
-  if (size + 5 > MAX_SIZE)
-    return 1;
-
-  envia(destino, RTS, "", 4);
-
-  if (!recebe(CTS, destino)) {
-    uint8_t add = buffer[0];
-    // if (add == destino)
-    //   Serial.println("CTS Recebido!");
-  } else {
-    // Serial.println("CTS não recebido!");
-    return 2;
-  }
-
-  envia(destino, DATA, mensagem, size + 4);
-
-  if (!recebe(ACK, destino)) {
-    uint8_t add = buffer[0];
-    // if (add == destino)
-    //   Serial.println("ACK Recebido!");
-  } else {
-    // Serial.println("ACK não recebido!");
-    return 3;
-  }
-  return 0;
-}
-
-int recebe(int type, int destino) {
-  int tamanho;
-  radio.startListening();
-  unsigned long inicio = millis();
-  while (millis() - inicio < TIMEOUT) {
-    if (radio.available()) {
-      delay(10);
-      radio.read(buffer, MAX_SIZE);
-      tamanho = buffer[3];
-      for(int i = 0; i < tamanho; i++)
-        Serial.print(buffer[i]);
-      Serial.println("");
-      if (buffer[0] != destino)
-        continue;
-
-      if (buffer[1] != origem)
-        continue;
-
-      if (buffer[2] != type)
-        continue;
-
-      if (tamanho > MAX_SIZE)
-        continue;
-
-      uint8_t checksum = checksum_f(buffer, tamanho - 1);
-      if (buffer[tamanho - 1] != checksum) {
-        continue;
-      }
-
-      
-      if (type == DATA) {
-        Serial.print(buffer[0]);
-        Serial.print(": ");
-        for(int i = 4; i < tamanho-1; i++) {
-          Serial.print((char)buffer[i]);
-        }
-        Serial.println("");
-      }
-
-      radio.flush_rx();
-      return 0;
-    }
-  }
-  Serial.print(".");
-  return 1;
-}
-
-int escutar(uint8_t destino) {
-  if(!recebe(RTS, destino)){
-    envia(destino, CTS, "", 4);
-  }
-
-  if(!recebe(DATA, destino)){
-    envia(destino, ACK, "", 4);
-  }
-}
-
-void loop() {
-  if(Serial.available()){
-    String message = Serial.readStringUntil('\n');
-    message.trim();
+/**
+ * @brief Configura e conecta ao banco de dados PostgreSQL (Neon), criando a tabela.
+ * @returns {Promise<Client>} A conexão aberta com o banco de dados.
+ */
+async function setupDatabase() {
+    const connectionString = process.env.DATABASE_URL;
     
-    if(message.length() > 0){
-      Serial.println("Enviando mensagem...");
-      Serial.print("Você: ");
-      Serial.print(message);
-      Serial.println("");
-
-      uint8_t msg[message.length()];
-      for(int i = 0; i < message.length(); i++){
-        msg[i] = message[i];
-      }
-
-      if(envia_pacote(destino, msg, message.length()) == 0){
-        Serial.println("Mensagem Enviada!");
-      } else {
-        Serial.println("Erro no envio.");
-      }
+    if (!connectionString) {
+        throw new Error("❌ Variável de ambiente DATABASE_URL não definida.");
     }
-  }
 
-  escutar(26);
+    client = new Client({
+        connectionString: connectionString,
+    });
 
-  delay(10);
+    await client.connect();
+
+    // Tabela inalterada
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS leituras_brutas (
+            id SERIAL PRIMARY KEY,
+            mensagem_bruta TEXT NOT NULL,
+            id_user INTEGER NOT NULL,
+            timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+    `);
+
+    console.log(`✅ Conectado ao PostgreSQL (Neon) e tabela 'leituras_brutas' pronta.`);
+    return client;
 }
+
+// --- FUNÇÕES DE MONITORAMENTO SERIAL ---
+
+/**
+ * @brief Inicializa a porta serial e o loop de leitura.
+ * @param {Client} dbClient - O cliente de conexão com o banco de dados PostgreSQL.
+ */
+function startSerialMonitor(dbClient) {
+    // Expressão regular compilada para uso eficiente
+    const DATA_REGEX = /^(\d{2}):\s*(.*)$/; 
+
+    try {
+        const port = new SerialPort({ 
+            path: PORT_NAME, 
+            baudRate: BAUD_RATE, 
+        });
+
+        const parser = port.pipe(new ReadlineParser({ delimiter: '\n' }));
+        
+        port.on('open', () => {
+            console.log(`✅ Porta serial '${PORT_NAME}' aberta. Monitorando (Formato: XX: Mensagem)...`);
+        });
+
+        port.on('error', (err) => {
+            console.error("❌ Erro na porta serial:", err.message);
+        });
+
+        // Loop de leitura e inserção
+        parser.on('data', async (line) => {
+            const trimmedLine = line.trim();
+
+            if (trimmedLine.length > 0) {
+                
+                // 💡 NOVO: Validação e Extração
+                const match = trimmedLine.match(DATA_REGEX);
+
+                if (!match) {
+                    console.log(`⚠️ IGNORADO (Formato Inválido): ${trimmedLine}`);
+                    return; // Ignora mensagens que não seguem o padrão "XX: <mensagem>"
+                }
+
+                // Extrai os grupos da Expressão Regular
+                const id_user_str = match[1]; // Grupo 1: o ID de dois dígitos (string)
+                const mensagem_bruta = match[2].trim(); // Grupo 2: a mensagem, removendo espaços extras
+                
+                const id_user_int = parseInt(id_user_str, 10);
+
+                if (mensagem_bruta.length === 0) {
+                     console.log(`⚠️ IGNORADO (Mensagem Vazia): ${trimmedLine}`);
+                     return;
+                }
+                
+                try {
+                    // SQL e Parâmetros atualizados
+                    const sql = "INSERT INTO leituras_brutas (mensagem_bruta, id_user) VALUES ($1, $2) RETURNING id";
+                    const values = [mensagem_bruta, id_user_int]; 
+
+                    const result = await dbClient.query(sql, values);
+                    
+                    console.log(`💾 SALVO (ID: ${result.rows[0].id} | USER: ${id_user_int}): ${mensagem_bruta}`);
+                } catch (e) {
+                    console.error("❌ Erro ao inserir no BD:", e.message);
+                }
+            }
+        });
+
+    } catch (e) {
+        console.error("❌ Erro ao inicializar a porta serial:", e.message);
+    }
+}
+
+// --- FUNÇÃO PRINCIPAL ---
+
+async function main() {
+    try {
+        const dbClient = await setupDatabase();
+        startSerialMonitor(dbClient);
+    } catch (e) {
+        console.error("❌ Falha crítica no MAIN:", e.message);
+        if (client) {
+            console.log("Fechando conexão com o banco de dados...");
+            await client.end(); 
+        }
+    }
+}
+
+main();
